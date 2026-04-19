@@ -29,7 +29,7 @@ static const char *TAG = "tft";
 #define TFT_CS     6
 #define TFT_DC     7
 #define TFT_RST    5
-#define TFT_BL    15   // matches sketch_apr18a.ino line 16
+#define TFT_BL    38   // matches sketch_apr18a.ino line 16
 
 static spi_device_handle_t s_spi;
 
