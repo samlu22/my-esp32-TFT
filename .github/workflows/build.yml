@@ -8,20 +8,27 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v5.3.2
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Build
-        uses: espressif/esp-idf-ci-action@v1
-        with:
-          esp_idf_version: v5.3.2
-          target: esp32s3
-          path: .
+        shell: bash
+        run: |
+          . /opt/esp/idf/export.sh
+          cd $GITHUB_WORKSPACE
+          idf.py set-target esp32s3
+          idf.py build
 
       - name: Merge binary
+        shell: bash
         run: |
+          . /opt/esp/idf/export.sh
+          cd $GITHUB_WORKSPACE
           pip install esptool -q
-          python3 -m esptool --chip esp32s3 merge_bin \
+          python -m esptool --chip esp32s3 merge_bin \
             -o firmware_merged.bin \
             --flash_mode dio --flash_freq 80m --flash_size 16MB \
             0x0     build/bootloader/bootloader.bin \
