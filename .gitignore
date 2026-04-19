@@ -1,0 +1,15 @@
+*.bin
+*.zip
+_fw/
+_fw.zip
+artifacts/
+.last_run_id
+build/
+sdkconfig
+dependencies.lock
+managed_components/
+__pycache__/
+*.pyc
+.vscode/
+.DS_Store
+Thumbs.db
