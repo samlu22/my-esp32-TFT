@@ -14,7 +14,13 @@
 #include "driver/gpio.h"
 #include "lvgl.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 extern const lv_image_dsc_t pureflow;
+#ifdef __cplusplus
+}
+#endif
 
 static const char *TAG = "tft";
 
