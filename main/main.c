@@ -1,14 +1,9 @@
 /*
- * TFT pureflow image display
- * Direct port of sketch_apr18a.ino to ESP-IDF
+ * T-Display-S3 TFT diagnostic
+ * Cycles through all MADCTL + invert combos automatically
+ * Also verifies pureflow data is read correctly
  *
- * Files in main/:
- *   main.c       (this file)
- *   pureflow.c   (from LVGL converter)
- *   lvgl.h       (your existing header)
- *
- * Pins match User_Setup.h exactly:
- *   MOSI=17 SCLK=18 CS=6 DC=7 RST=5 BL=15
+ * Watch TeraTerm at 115200 to see which combo number works
  */
 
 #include <string.h>
@@ -19,7 +14,6 @@
 #include "driver/gpio.h"
 #include "lvgl.h"
 
-// declared in pureflow.c
 extern const lv_image_dsc_t pureflow;
 
 static const char *TAG = "tft";
@@ -29,11 +23,9 @@ static const char *TAG = "tft";
 #define TFT_CS     6
 #define TFT_DC     7
 #define TFT_RST    5
-#define TFT_BL    38   // matches sketch_apr18a.ino line 16
+#define TFT_BL    38
 
 static spi_device_handle_t s_spi;
-
-// ─── SPI helpers ──────────────────────────────────────────────────────────────
 
 static void tft_cmd(uint8_t cmd) {
     gpio_set_level(TFT_DC, 0);
@@ -48,15 +40,13 @@ static void tft_data(const uint8_t *d, int len) {
     spi_device_polling_transmit(s_spi, &t);
 }
 
-// ─── Init — mirrors TFT_eSPI ST7789 for T-Display-S3 ─────────────────────────
-
-static void tft_init(void) {
-    // BL pin — same as sketch_apr18a.ino:
-    //   pinMode(15, OUTPUT); digitalWrite(15, HIGH);
+static void spi_init(void) {
     gpio_reset_pin(TFT_BL);
     gpio_set_direction(TFT_BL, GPIO_MODE_OUTPUT);
+    gpio_set_level(TFT_BL, 0);
+    vTaskDelay(pdMS_TO_TICKS(50));
     gpio_set_level(TFT_BL, 1);
-    ESP_LOGI(TAG, "BL on");
+    ESP_LOGI(TAG, "BL=38 HIGH");
 
     gpio_reset_pin(TFT_RST);
     gpio_set_direction(TFT_RST, GPIO_MODE_OUTPUT);
@@ -67,38 +57,36 @@ static void tft_init(void) {
 
     gpio_reset_pin(TFT_DC);
     gpio_set_direction(TFT_DC, GPIO_MODE_OUTPUT);
-    gpio_set_level(TFT_DC, 1);
 
     spi_bus_config_t bc = {
-        .mosi_io_num   = TFT_MOSI, .miso_io_num = -1,
-        .sclk_io_num   = TFT_SCLK, .quadwp_io_num = -1,
+        .mosi_io_num = TFT_MOSI, .miso_io_num = -1,
+        .sclk_io_num = TFT_SCLK, .quadwp_io_num = -1,
         .quadhd_io_num = -1, .max_transfer_sz = 320 * 170 * 2,
     };
     ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &bc, SPI_DMA_CH_AUTO));
 
     spi_device_interface_config_t dc = {
         .clock_speed_hz = 40000000, .mode = 0,
-        .spics_io_num   = TFT_CS,   .queue_size = 7,
+        .spics_io_num = TFT_CS, .queue_size = 7,
     };
     ESP_ERROR_CHECK(spi_bus_add_device(SPI2_HOST, &dc, &s_spi));
-
-    uint8_t v;
-    tft_cmd(0x01); vTaskDelay(pdMS_TO_TICKS(150)); // SW reset
-    tft_cmd(0x11); vTaskDelay(pdMS_TO_TICKS(120)); // sleep out
-    tft_cmd(0x3A); v = 0x55; tft_data(&v, 1);      // RGB565
-    tft_cmd(0x36); v = 0x60; tft_data(&v, 1);      // MADCTL landscape
-    tft_cmd(0x21);                                  // invert ON  (ST7789 T-Display-S3)
-    tft_cmd(0x13);                                  // normal display on
-    tft_cmd(0x29); vTaskDelay(pdMS_TO_TICKS(20));  // display on
-
-    ESP_LOGI(TAG, "TFT init done");
 }
 
-// ─── Fill screen ──────────────────────────────────────────────────────────────
+// Apply ST7789 init with given MADCTL and invert setting
+static void st7789_init(uint8_t madctl, bool invert) {
+    uint8_t v;
+    tft_cmd(0x01); vTaskDelay(pdMS_TO_TICKS(150));   // SW reset
+    tft_cmd(0x11); vTaskDelay(pdMS_TO_TICKS(120));   // sleep out
+    tft_cmd(0x3A); v = 0x55; tft_data(&v, 1);        // RGB565
+    tft_cmd(0x36); tft_data(&madctl, 1);              // MADCTL
+    tft_cmd(invert ? 0x21 : 0x20);                   // invert on/off
+    tft_cmd(0x13);                                    // normal mode
+    tft_cmd(0x29); vTaskDelay(pdMS_TO_TICKS(20));    // display on
+}
 
 static void tft_fill(uint16_t color) {
-    uint8_t ca[] = {0x00,0x00,0x01,0x3F}; // x 0..319
-    uint8_t ra[] = {0x00,0x00,0x00,0xA9}; // y 0..169
+    uint8_t ca[] = {0x00,0x00,0x01,0x3F};
+    uint8_t ra[] = {0x00,0x00,0x00,0xA9};
     tft_cmd(0x2A); tft_data(ca, 4);
     tft_cmd(0x2B); tft_data(ra, 4);
     tft_cmd(0x2C);
@@ -110,15 +98,10 @@ static void tft_fill(uint16_t color) {
     for (int y = 0; y < 170; y++) spi_device_polling_transmit(s_spi, &t);
 }
 
-// ─── Push image — mirrors tft.setSwapBytes(true) + tft.pushImage() ───────────
-// pureflow_map is little-endian RGB565 (LVGL format)
-// setSwapBytes(true) means TFT_eSPI swaps byte pairs before sending
-// → we must also swap: send [hi, lo] instead of [lo, hi]
-
-static void tft_push_image(const lv_image_dsc_t *img) {
-    uint16_t w = (uint16_t)img->header.w;
-    uint16_t h = (uint16_t)img->header.h;
-    const uint8_t *src = img->data;
+static void tft_push_image(void) {
+    uint16_t w = (uint16_t)pureflow.header.w;
+    uint16_t h = (uint16_t)pureflow.header.h;
+    const uint8_t *src = pureflow.data;
 
     uint8_t ca[4] = {0x00,0x00,(uint8_t)((w-1)>>8),(uint8_t)(w-1)};
     uint8_t ra[4] = {0x00,0x00,(uint8_t)((h-1)>>8),(uint8_t)(h-1)};
@@ -127,41 +110,83 @@ static void tft_push_image(const lv_image_dsc_t *img) {
     tft_cmd(0x2C);
     gpio_set_level(TFT_DC, 1);
 
-    // Swap bytes per pixel to match setSwapBytes(true)
-    // Allocate one row buffer on heap — 320*2 = 640 bytes
     static uint8_t row[320 * 2];
     for (int y = 0; y < h; y++) {
         const uint8_t *p = src + y * w * 2;
         for (int x = 0; x < w; x++) {
-            row[x*2]   = p[x*2 + 1]; // hi byte
-            row[x*2+1] = p[x*2];     // lo byte
+            row[x*2]   = p[x*2+1];  // swap bytes
+            row[x*2+1] = p[x*2];
         }
         spi_transaction_t t = { .length = (size_t)w*2*8, .tx_buffer = row };
         spi_device_polling_transmit(s_spi, &t);
     }
-    ESP_LOGI(TAG, "image pushed %dx%d", w, h);
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
+// Verify pureflow data is actually readable and non-zero
+static void verify_pureflow(void) {
+    uint16_t w = (uint16_t)pureflow.header.w;
+    uint16_t h = (uint16_t)pureflow.header.h;
+    uint32_t sz = pureflow.data_size;
+    const uint8_t *d = pureflow.data;
+
+    ESP_LOGI(TAG, "--- pureflow verify ---");
+    ESP_LOGI(TAG, "  w=%d h=%d data_size=%lu", w, h, (unsigned long)sz);
+    ESP_LOGI(TAG, "  data ptr = %p", d);
+
+    // Print first 8 bytes as hex
+    if (d) {
+        ESP_LOGI(TAG, "  first bytes: %02X %02X %02X %02X %02X %02X %02X %02X",
+            d[0],d[1],d[2],d[3],d[4],d[5],d[6],d[7]);
+    } else {
+        ESP_LOGE(TAG, "  data pointer is NULL!");
+    }
+
+    // Count non-zero bytes in first 1000
+    int nonzero = 0;
+    for (int i = 0; i < 1000 && i < (int)sz; i++) if (d[i]) nonzero++;
+    ESP_LOGI(TAG, "  non-zero in first 1000 bytes: %d", nonzero);
+    ESP_LOGI(TAG, "-----------------------");
+}
 
 void app_main(void) {
-    ESP_LOGI(TAG, "=== pureflow image test ===");
+    ESP_LOGI(TAG, "=== TFT diagnostic — cycling MADCTL + invert ===");
 
-    tft_init();
+    // Verify pureflow data before touching display
+    verify_pureflow();
 
-    // white flash — proves backlight + SPI
-    ESP_LOGI(TAG, "white");
-    tft_fill(0xFFFF);
-    vTaskDelay(pdMS_TO_TICKS(400));
+    spi_init();
 
-    // black
-    tft_fill(0x0000);
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // All MADCTL values to try (covers all rotations and mirrors)
+    static const uint8_t madctl_vals[] = {
+        0x00, 0x60, 0xA0, 0xC0,   // no swap
+        0x20, 0x40, 0x80, 0xE0,   // other common values
+    };
+    static const bool invert_vals[] = { false, true };
 
-    // push pureflow image
-    ESP_LOGI(TAG, "pushing pureflow %dx%d", pureflow.header.w, pureflow.header.h);
-    tft_push_image(&pureflow);
+    int combo = 0;
+    while (1) {
+        for (int iv = 0; iv < 2; iv++) {
+            for (int mv = 0; mv < 8; mv++) {
+                uint8_t madctl = madctl_vals[mv];
+                bool invert = invert_vals[iv];
 
-    ESP_LOGI(TAG, "done — holding");
-    while (1) vTaskDelay(pdMS_TO_TICKS(5000));
+                ESP_LOGI(TAG, "=== Combo %d: MADCTL=0x%02X invert=%s ===",
+                    combo, madctl, invert ? "ON" : "OFF");
+
+                st7789_init(madctl, invert);
+
+                // White flash first — if display works you'll see white
+                tft_fill(0xFFFF);
+                vTaskDelay(pdMS_TO_TICKS(300));
+
+                // Then push image
+                tft_push_image();
+                vTaskDelay(pdMS_TO_TICKS(2000));
+
+                combo++;
+            }
+        }
+        // After full cycle, just hold last working one if you saw it
+        ESP_LOGI(TAG, "=== Full cycle done, repeating ===");
+    }
 }
