@@ -1,0 +1,35 @@
+name: Build TFT Hello
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.4.4
+          target: esp32s3
+          path: .
+
+      - name: Merge binary
+        run: |
+          pip install esptool -q
+          python3 -m esptool --chip esp32s3 merge_bin \
+            -o firmware_merged.bin \
+            --flash_mode dio --flash_freq 80m --flash_size 16MB \
+            0x0     build/bootloader/bootloader.bin \
+            0x8000  build/partition_table/partition-table.bin \
+            0x10000 build/tft_hello.bin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tft-hello-run${{ github.run_number }}
+          path: firmware_merged.bin
+          retention-days: 30
